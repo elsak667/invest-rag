@@ -112,6 +112,7 @@ def record_match_history(company: str, embedding: list, match_result: dict,
         "extracted_tech": extracted_tech,
         "extracted_apps": extracted_apps,
         "extracted_customers": extracted_customers,
+        "sector_hint": sector_hint,
         "judgment": status,  # pending / confirmed / rejected / modified
     }
     result = supabase_insert("sector_match_history", record)
