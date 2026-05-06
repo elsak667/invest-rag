@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+venv/
+.venv/
+
+# Credentials — 凭据在 ~/.hermes/credentials.json，项目内不存
+credentials.py   # 已存在，从外部读取
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Supabase / misc
+supabase/.temp/
+*.log
