@@ -41,7 +41,7 @@ from sector_matcher import (
 
 def get_real_docs():
     """获取所有真实公司的 documents（排除测试公司，每公司取最新一条）"""
-    resp = httpx.get(f'{SUPABASE_URL}/rest/v1/documents', headers=HEADERS, timeout=15)
+    resp = httpx.get(f'{SUPABASE_URL}/rest/v1/documents', headers=HEADERS, params={"order": "created_at.desc"}, timeout=15)
     resp.raise_for_status()
     all_docs = resp.json()
 

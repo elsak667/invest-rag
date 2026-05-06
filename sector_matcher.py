@@ -157,47 +157,47 @@ def update_judgment(history_id: str, judgment: str, note: str = None):
 
 # ============ LLM 三维度提取 ============
 def _call_llm(prompt: str, system: str = "") -> str:
-    """调用 LLM (nengpa / MiniMax-M2.7)"""
-    import openai, os
+    """调用 LLM (nengpa / MiniMax-M2.7)，用 requests 直连 relay"""
+    import os, requests, json
 
-    # 优先从环境变量读（Hermes 注入）
-    nengpa_key = os.environ.get("MINIMAX_API_KEY", "")
-    if not nengpa_key:
-        # 尝试从 config.yaml 读（Hermes 运行时注入）
-        try:
-            import yaml
-            cfg_path = os.path.expanduser("~/.hermes/config.yaml")
-            with open(cfg_path) as f:
-                cfg = yaml.safe_load(f)
-            for p in cfg.get("custom_providers", []):
-                if p.get("name") == "minimax":
-                    nengpa_key = p.get("api_key", "")
-                    base_url = p.get("base_url", "http://127.0.0.1:18800/v1")
-                    break
-        except Exception:
-            pass
-
-    # 回退：用本地 nengpa relay（Hermes 注入真实 key）
-    if not nengpa_key:
-        nengpa_key = os.environ.get("NVIDIA_API_KEY", "")
     base_url = os.environ.get("MINIMAX_BASE_URL", "http://127.0.0.1:18800/v1")
 
-    client = openai.OpenAI(api_key=nengpa_key or "sk-cp-...f727", base_url=base_url)
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    try:
-        resp = client.chat.completions.create(
-            model="MiniMax-M2.7",
-            messages=messages,
-            temperature=0.1,
-            max_tokens=1000,
-        )
-        return resp.choices[0].message.content
-    except Exception as e:
-        return f"LLM_ERROR: {e}"
+    payload = {
+        "model": "MiniMax-M2.7",
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": 1000,
+    }
+
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                f"{base_url}/chat/completions",
+                json=payload,
+                headers={"Content-Type": "application/json", "Accept-Encoding": "identity"},
+                timeout=(10, 60),  # (connect, read)
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return data["choices"][0]["message"]["content"]
+            # 重试非 200 错误
+            if attempt < 2:
+                continue
+            return f"LLM_ERROR: HTTP {r.status_code}"
+        except requests.exceptions.Timeout:
+            if attempt < 2:
+                continue
+            return "LLM_ERROR: Timeout"
+        except Exception as e:
+            if attempt < 2:
+                continue
+            return f"LLM_ERROR: {e}"
+    return "LLM_ERROR: max retries"
 
 
 def extract_three_dimensions(content: str, company: str = "") -> dict:
@@ -247,11 +247,16 @@ def extract_three_dimensions(content: str, company: str = "") -> dict:
         print(f"  LLM 调用失败: {raw}")
         return {"tech": [], "apps": [], "positioning": [], "customers": [], "sector_hint": None}
 
-    # 尝试解析 JSON
+    # 清理：去掉 think 块、markdown 代码块
+    # 清理：去掉 think 块、markdown 代码块
     import json, re
-
-    # 去掉 markdown 代码块标记
-    cleaned = re.sub(r"```(?:json)?\s*", "", raw.strip()).strip()
+    cleaned = re.sub(r"<think>.*?</think>", "", raw.strip(), flags=re.DOTALL)
+    cleaned = re.sub(r"```(?:json)?\s*", "", cleaned).strip()
+    # 如果不以 { 开头，尝试从内容中找 JSON 对象
+    if not cleaned.startswith("{"):
+        m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if m:
+            cleaned = m.group(0)
     try:
         result = json.loads(cleaned)
         # 确保字段存在
