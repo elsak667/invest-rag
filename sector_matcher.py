@@ -30,6 +30,27 @@ except Exception:
 SIM_HIGH = 0.85   # sim >= 0.85 → 直接归类
 SIM_MEDIUM = 0.70  # sim >= 0.70 → 待确认
 
+# ============ 子赛道定义（LLM 提取的关键词文本，向量匹配用）============
+# key: 子赛道名, value: 描述文本（embedding 对应这段文本）
+SUB_SECTOR_DEFINITIONS = {
+    "CXO": (
+        "医药外包服务，包括 CRO（临床前/临床研究）、CDMO（工艺开发与生产）、CXO 综合服务。"
+        "核心业务：新药研发服务、工艺优化、临床用药生产、商业化生产。"
+    ),
+    "创新药/抗体": (
+        "创新型抗体药物、ADC 抗体偶联药物、单克隆抗体、靶向治疗药物。"
+        "核心技术：定点偶联技术、重组蛋白药物、多特异性抗体。"
+    ),
+    "糖尿病/代谢": (
+        "糖尿病治疗药物、胰岛素及其类似物、GLP-1 受体激动剂、代谢性疾病治疗。"
+        "主要产品：甘精胰岛素、门冬胰岛素、赖脯胰岛素、GLP-1 类药物。"
+    ),
+    "医美消费": (
+        "医美消费产品、医疗美容、皮肤护理、整形耗材、消费型医疗。"
+        "应用场景：医疗美容机构、皮肤科、消费医疗市场。"
+    ),
+}
+
 # ============ Supabase REST API ============
 def supabase_select(table: str, params: dict) -> list:
     url = f"{SUPABASE_URL}/rest/v1/{table}"
@@ -432,6 +453,99 @@ def match_sector(embedding: list, sectors: list) -> dict:
         return {"status": "medium", "result": best, "all": results[:3]}
     else:
         return {"status": "none", "result": best, "all": results[:3]}
+
+
+# ============ 子赛道匹配（基于 LLM 提取的关键词，向量匹配子赛道描述）============
+def _build_sub_sector_embeddings() -> dict:
+    """
+    用 embedding service 把每个子赛道描述文本转成向量。
+    返回 {子赛道名: embedding}
+    """
+    # 复用 scan_documents.py 里的 embed_text 函数
+    try:
+        from scan_documents import embed_text
+    except ImportError:
+        # 如果 embed_text 不可用，用内联方式调 nengpa relay
+        import os, requests
+
+        def embed_text(texts: list) -> list:
+            base_url = os.environ.get("MINIMAX_BASE_URL", "http://127.0.0.1:18800/v1")
+            payload = {
+                "model": "MiniMax-M2.7",
+                "input": texts,
+            }
+            try:
+                r = requests.post(
+                    f"{base_url}/embeddings",
+                    json=payload,
+                    headers={"Content-Type": "application/json", "Accept-Encoding": "identity"},
+                    timeout=(10, 60),
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    return [item["embedding"] for item in data.get("data", [])]
+            except Exception:
+                pass
+            return None
+
+    names = list(SUB_SECTOR_DEFINITIONS.keys())
+    descs = [SUB_SECTOR_DEFINITIONS[n] for n in names]
+    embeddings = embed_text(descs)
+    if embeddings is None:
+        return {}
+    return {name: emb for name, emb in zip(names, embeddings)}
+
+
+def match_subsector(dims: dict, sub_embeddings: dict) -> list:
+    """
+    用 extracted_dims 的关键词（tech/apps/positioning）拼成一段文本，
+    与子赛道描述文本做向量相似度匹配，返回排序后的子赛道列表。
+    dims: extract_three_dimensions() 返回的 dict
+    sub_embeddings: {_build_sub_sector_embeddings} 返回的 {名: emb}
+    返回: [{"sub_sector": "CXO", "score": 0.87}, ...] 按 score 降序
+    """
+    try:
+        from scan_documents import embed_text
+    except ImportError:
+        import os, requests
+
+        def embed_text(texts: list) -> list:
+            base_url = os.environ.get("MINIMAX_BASE_URL", "http://127.0.0.1:18800/v1")
+            payload = {"model": "MiniMax-M2.7", "input": texts}
+            try:
+                r = requests.post(
+                    f"{base_url}/embeddings",
+                    json=payload,
+                    headers={"Content-Type": "application/json", "Accept-Encoding": "identity"},
+                    timeout=(10, 60),
+                )
+                if r.status_code == 200:
+                    return [item["embedding"] for item in r.json().get("data", [])]
+            except Exception:
+                pass
+            return None
+
+    # 把关键词拼成公司描述文本
+    tech = dims.get("tech", [])
+    apps = dims.get("apps", [])
+    positioning = dims.get("positioning", [])
+    company_text = "、".join(tech + apps + positioning)
+
+    if not company_text.strip():
+        return []
+
+    emb = embed_text([company_text])
+    if not emb or not emb[0]:
+        return []
+
+    company_emb = emb[0]
+    results = []
+    for name, sub_emb in sub_embeddings.items():
+        sim = cosine_similarity(company_emb, sub_emb)
+        results.append({"sub_sector": name, "score": round(sim, 4)})
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results
 
 
 # ============ 新赛道推荐 ============

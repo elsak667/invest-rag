@@ -36,7 +36,17 @@ from sector_matcher import (
     send_feishu_message,
     FEISHU_USER_OPEN_ID,
     _add_member_to_sector,
+    match_subsector,
+    _build_sub_sector_embeddings,
 )
+
+# 启动时构建子赛道 embeddings（一次性）
+print("[子赛道 embeddings 构建]")
+_SUB_EMBEDDINGS = _build_sub_sector_embeddings()
+if _SUB_EMBEDDINGS:
+    print(f"  子赛道: {list(_SUB_EMBEDDINGS.keys())}")
+else:
+    print("  ⚠️ 子赛道 embeddings 构建失败，子赛道匹配将跳过")
 
 
 def get_real_docs():
@@ -108,6 +118,20 @@ def backfill_company(doc: dict, silent: bool = False):
     result = match_sector(embedding, sectors)
     status = result['status']
     best = result.get('result')
+
+    # 子赛道匹配（基于 LLM 提取的关键词，向量匹配子赛道描述）
+    sub_results = []
+    if _SUB_EMBEDDINGS and dims:
+        sub_results = match_subsector(dims, _SUB_EMBEDDINGS)
+        if sub_results:
+            top = sub_results[0]
+            print(f"  子赛道: {top['sub_sector']}（相似度 {top['score']:.4f}）")
+            others_str = ", ".join(f"{r['sub_sector']}({r['score']:.4f})" for r in sub_results[1:3])
+            print(f"  其他: {others_str}")
+        else:
+            print("  子赛道: 无匹配结果")
+    elif not dims:
+        print("  子赛道: 跳过（无 dims）")
 
     if best:
         print(f"  匹配状态: {status}, 得分: {best.get('sim_score', 0):.4f}")
